@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 
@@ -77,7 +78,10 @@ func makeIssueComment(plan *tfjson.Plan, runURL, commitURL string) (string, erro
 			"%s %s %s",
 			action.Symbol(),
 			fmt.Sprintf("%s \"%s\" \"%s\"", "resource", c.Type, c.Name),
-			cmp.Diff(c.Change.Before, c.Change.After),
+			cmp.Diff(
+				maskSensitiveValues(c.Change.Before, c.Change.BeforeSensitive),
+				maskSensitiveValues(c.Change.After, c.Change.AfterSensitive),
+			),
 		)
 		diff.WriteString(fmt.Sprintf(changeDetails, summary, detail))
 		diff.WriteString("\n\n")
@@ -90,31 +94,76 @@ func makeIssueComment(plan *tfjson.Plan, runURL, commitURL string) (string, erro
 
 	outputs := plan.OutputChanges
 	if len(outputs) > 0 {
-		summary := fmt.Sprintf("Outputs %d planned to change", len(outputs))
 		keys := make([]string, 0, len(plan.OutputChanges))
 		for k := range plan.OutputChanges {
 			keys = append(keys, k)
 		}
 		sort.Strings(keys)
 
+		var count int
 		var ob strings.Builder
 		for _, key := range keys {
 			output := outputs[key]
 			action := UnmarshalActions(output.Actions)
-			if action != NoOp {
-				detail := fmt.Sprintf(
-					"%s %s: %s\n",
-					action.Symbol(),
-					key,
-					cmp.Diff(output.Before, output.After),
-				)
-				ob.WriteString(detail)
+			if action == NoOp {
+				continue
 			}
+			count += 1
+
+			detail := fmt.Sprintf(
+				"%s %s: %s\n",
+				action.Symbol(),
+				key,
+				cmp.Diff(
+					maskSensitiveValues(output.Before, output.BeforeSensitive),
+					maskSensitiveValues(output.After, output.AfterSensitive),
+				),
+			)
+			ob.WriteString(detail)
 		}
+
+		summary := fmt.Sprintf("Outputs %d planned to change", count)
 		b.WriteString(fmt.Sprintf(changeDetails, summary, ob.String()))
 	}
 
 	return b.String(), nil
+}
+
+const maskedValue = "Sensitive value"
+
+func maskSensitiveValues(data, sensitive interface{}) interface{} {
+	switch sensitive.(type) {
+	case bool:
+		if sensitive.(bool) && data != nil {
+			data = maskedValue
+		}
+	case map[string]interface{}:
+		d := data.(map[string]interface{})
+		s := sensitive.(map[string]interface{})
+		for k, v := range d {
+			if _, ok := s[k]; !ok {
+				continue
+			}
+			switch s[k].(type) {
+			case bool:
+				if _, ok := d[k]; ok && d[k] != nil {
+					d[k] = maskedValue
+				}
+			case map[string]interface{}:
+				if nestedData, ok := v.(map[string]interface{}); ok {
+					maskSensitiveValues(nestedData, s[k].(map[string]interface{}))
+				}
+			case []interface{}:
+				if !slices.Contains(s[k].([]interface{}), true) {
+					continue
+				}
+				if d[k] != nil {
+					d[k] = maskedValue
+				}
+			}
+		}
+	}
+	return data
 }
 
 func createIssueComment(ctx context.Context, client *github.Client, owner, repo string, prNumber int, body string) error {
