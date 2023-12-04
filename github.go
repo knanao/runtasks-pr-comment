@@ -7,6 +7,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-github/v56/github"
@@ -18,11 +19,13 @@ func makeIssueComment(plan *tfjson.Plan, runURL, commitURL string) (string, erro
 	const (
 		tasksBadgeURL = `<!-- runtasks-pr-comment -->
 [![RUN_TASKS](https://img.shields.io/static/v1?label=TFE&message=Run_Tasks&color=success&style=flat)](https://developer.hashicorp.com/terraform/cloud-docs/workspaces/settings/run-tasks)`
-		runBadgeURL   = `[![RUNS](https://img.shields.io/static/v1?label=TFE&message=Run&style=flat)](%s)`
-		description   = `This run task was triggered by %s.`
-		title         = `### Terraform Cloud/Enterprise Plan Output`
-		noChanges     = "```\nNo changes. Your infrastructure matches the configuration.\n```"
-		changeDetails = "<details>\n<summary>%s</summary>\n\n```go\n%s\n```\n</details>"
+		runBadgeURL       = `[![RUNS](https://img.shields.io/static/v1?label=TFE&message=Run&style=flat)](%s)`
+		description       = `This run task was triggered by %s.`
+		title             = `### Terraform Cloud/Enterprise Plan Output`
+		noChanges         = "```\nNo changes. Your infrastructure matches the configuration.\n```"
+		changeDetails     = "<details>\n<summary>%s</summary>\n\n```go\n%s\n```\n</details>"
+		exceededDetails   = "```\nThe results are too long, so please directly check them on TFC/E.\n```"
+		maxLimitWithDelta = 65536 - 1000
 	)
 
 	var b strings.Builder
@@ -87,12 +90,9 @@ func makeIssueComment(plan *tfjson.Plan, runURL, commitURL string) (string, erro
 		diff.WriteString("\n\n")
 	}
 
-	b.WriteString(fmt.Sprintf("```\n%s\n```", cs.String()))
-	b.WriteString("\n\n")
-
-	b.WriteString(diff.String())
-
 	outputs := plan.OutputChanges
+	var oDiff strings.Builder
+	var oCount int
 	if len(outputs) > 0 {
 		keys := make([]string, 0, len(plan.OutputChanges))
 		for k := range plan.OutputChanges {
@@ -100,15 +100,13 @@ func makeIssueComment(plan *tfjson.Plan, runURL, commitURL string) (string, erro
 		}
 		sort.Strings(keys)
 
-		var count int
-		var ob strings.Builder
 		for _, key := range keys {
 			output := outputs[key]
 			action := UnmarshalActions(output.Actions)
 			if action == NoOp {
 				continue
 			}
-			count += 1
+			oCount += 1
 
 			detail := fmt.Sprintf(
 				"%s %s: %s\n",
@@ -119,12 +117,27 @@ func makeIssueComment(plan *tfjson.Plan, runURL, commitURL string) (string, erro
 					maskSensitiveValues(output.After, output.AfterSensitive),
 				),
 			)
-			ob.WriteString(detail)
+			oDiff.WriteString(detail)
 		}
-
-		summary := fmt.Sprintf("Outputs %d planned to change", count)
-		b.WriteString(fmt.Sprintf(changeDetails, summary, ob.String()))
 	}
+
+	// https://github.com/orgs/community/discussions/41331
+	size := utf8.RuneCountInString(diff.String()) + utf8.RuneCountInString(oDiff.String())
+	if size > maxLimitWithDelta {
+		b.WriteString(exceededDetails)
+		return b.String(), nil
+	}
+
+	b.WriteString(fmt.Sprintf("```\n%s\n```", cs.String()))
+	b.WriteString("\n\n")
+	b.WriteString(diff.String())
+
+	if len(outputs) == 0 {
+		return b.String(), nil
+	}
+
+	oSummary := fmt.Sprintf("Outputs %d planned to change", oCount)
+	b.WriteString(fmt.Sprintf(changeDetails, oSummary, oDiff.String()))
 
 	return b.String(), nil
 }
