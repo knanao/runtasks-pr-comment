@@ -1,4 +1,4 @@
-BUILD_VERSION=v0.1.0
+BUILD_VERSION=v0.1.1
 REPOSITORY=knanao/runtasks-pr-comment
 
 .PHONY: build
@@ -8,7 +8,8 @@ build:
 .PHONY: push
 push: build
 push:
-	docker push ${REPOSITORY} --all-tags
+	docker push ${REPOSITORY}:${BUILD_VERSION}
+	docker push ${REPOSITORY}:latest
 
 .PHONY: run
 run: GITHUB_OAUTH_TOKEN ?=
