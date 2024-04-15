@@ -1,5 +1,5 @@
 BUILD_VERSION=v0.1.1
-REPOSITORY=knanao/runtasks-pr-comment
+REPOSITORY=ghcr.io/knanao/runtasks-pr-comment
 
 .PHONY: build
 build:
